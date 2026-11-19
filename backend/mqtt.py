@@ -12,7 +12,7 @@ import queue
 import threading
 from datetime import datetime, timezone
 from urllib.parse import quote_plus
-
+from rotas_alertas import criar_rotas_alertas
 import paho.mqtt.client as mqtt
 from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
@@ -83,6 +83,7 @@ if hasattr(app, "json"):
     app.json.sort_keys = False
 
 mybd = SQLAlchemy(app)
+app.register_blueprint(criar_rotas_alertas(mybd))
 
 
 class Sensor(mybd.Model):
