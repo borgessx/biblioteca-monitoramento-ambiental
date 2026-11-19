@@ -7,6 +7,7 @@
 import json
 import logging
 import math
+from erros import registrar_erros
 import os
 import queue
 import threading
@@ -83,8 +84,12 @@ if hasattr(app, "json"):
     app.json.sort_keys = False
 
 mybd = SQLAlchemy(app)
-app.register_blueprint(criar_rotas_alertas(mybd))
 
+registrar_erros(app, mybd)
+
+app.register_blueprint(
+    criar_rotas_alertas(mybd)
+)
 
 class Sensor(mybd.Model):
     __tablename__ = "sensor"

@@ -20,9 +20,14 @@ import alertas as a
 
 
 class Teste(unittest.TestCase):
-
+    @classmethod
+    def tearDownClass(cls):
+        with m.app.app_context():
+            m.mybd.session.remove()
+            m.mybd.engine.dispose()
+        super().tearDownClass()
     def setUp(self):
-
+        
         self.ctx = m.app.app_context()
         self.ctx.push()
         self.addCleanup(self.ctx.pop)
@@ -110,7 +115,10 @@ class Teste(unittest.TestCase):
                 destinatario TEXT,
                 mensagem TEXT,
                 status_envio TEXT,
-                data_envio DATETIME
+                data_envio DATETIME,
+                tentativas INTEGER NOT NULL DEFAULT 0,
+                proxima_tentativa DATETIME,
+                ultimo_erro TEXT
             )
             """,
 
@@ -449,6 +457,7 @@ class Teste(unittest.TestCase):
                 6
             )
 
+
     def test_falha_email(self):
 
         self.receber(
@@ -459,16 +468,60 @@ class Teste(unittest.TestCase):
             a,
             "enviar_email",
             side_effect=RuntimeError("Falha simulada")
-        ):
+        ) as envio:
 
+            for tentativa in range(1, 4):
+
+                a.enviar_pendente(m.mybd)
+
+                self.assertEqual(
+                    self.sql(
+                        "SELECT tentativas FROM notificacao"
+                    ),
+                    tentativa
+                )
+
+                if tentativa < 3:
+
+                    self.assertEqual(
+                        self.sql(
+                            "SELECT status_envio FROM notificacao"
+                        ),
+                        "PENDENTE"
+                    )
+
+                    # Confirma que nao reenvia antes do horario
+                    a.enviar_pendente(m.mybd)
+
+                    self.assertEqual(
+                        envio.call_count,
+                        tentativa
+                    )
+
+                    # Libera a proxima tentativa no teste
+                    m.mybd.session.execute(
+                        text("""
+                            UPDATE notificacao
+                            SET proxima_tentativa = NULL
+                        """)
+                    )
+
+                    m.mybd.session.commit()
+
+            self.assertEqual(envio.call_count, 3)
+
+            self.assertEqual(
+                self.sql(
+                    "SELECT status_envio FROM notificacao"
+                ),
+                "ERRO"
+            )
+
+            # Confirma que nao existe quarta tentativa
             a.enviar_pendente(m.mybd)
 
-        self.assertEqual(
-            self.sql(
-                "SELECT status_envio FROM notificacao"
-            ),
-            "ERRO"
-        )
+            self.assertEqual(envio.call_count, 3)
+
 
 
 if __name__ == "__main__":

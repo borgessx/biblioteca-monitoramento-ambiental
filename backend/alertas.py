@@ -1,8 +1,7 @@
 
 import os
 import logging
-
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import text
 from dotenv import load_dotenv
 from alerta_email import enviar_email
@@ -240,16 +239,32 @@ def processar_ocorrencias(
     banco.session.commit()
 
 
+
 def enviar_pendente(banco):
+
+    MAX_TENTATIVAS = 3
 
     notificacao = banco.session.execute(
         text("""
-            SELECT id, destinatario, mensagem
+            SELECT
+                id,
+                destinatario,
+                mensagem,
+                tentativas
             FROM notificacao
             WHERE status_envio = 'PENDENTE'
+            AND tentativas < :maximo
+            AND (
+                proxima_tentativa IS NULL
+                OR proxima_tentativa <= :agora
+            )
             ORDER BY id
             LIMIT 1
-        """)
+        """),
+        {
+            "maximo": MAX_TENTATIVAS,
+            "agora": agora()
+        }
     ).mappings().first()
 
     if notificacao is None:
@@ -258,14 +273,23 @@ def enviar_pendente(banco):
 
     notificacao = dict(notificacao)
 
+    tentativa = notificacao["tentativas"] + 1
+
+    # Reserva a notificacao para envio
     resultado = banco.session.execute(
         text("""
             UPDATE notificacao
-            SET status_envio = 'ENVIANDO'
+            SET status_envio = 'ENVIANDO',
+                tentativas = tentativas + 1,
+                proxima_tentativa = NULL
             WHERE id = :id
             AND status_envio = 'PENDENTE'
+            AND tentativas = :anterior
         """),
-        {"id": notificacao["id"]}
+        {
+            "id": notificacao["id"],
+            "anterior": notificacao["tentativas"]
+        }
     )
 
     banco.session.commit()
@@ -283,35 +307,74 @@ def enviar_pendente(banco):
 
         status = "ENVIADO"
         data_envio = agora()
+        proxima_tentativa = None
+        ultimo_erro = None
 
-    except Exception:
+        logger.info(
+            "Notificacao %s enviada na tentativa %s",
+            notificacao["id"],
+            tentativa
+        )
 
-        logger.exception("Erro ao enviar email")
+    except Exception as erro:
 
-        status = "ERRO"
+        logger.exception(
+            "Falha no envio da notificacao %s",
+            notificacao["id"]
+        )
+
         data_envio = None
+        ultimo_erro = type(erro).__name__
+
+        if tentativa >= MAX_TENTATIVAS:
+
+            status = "ERRO"
+            proxima_tentativa = None
+
+            logger.error(
+                "Notificacao %s atingiu o limite de tentativas",
+                notificacao["id"]
+            )
+
+        else:
+
+            status = "PENDENTE"
+
+            intervalo = 60 * tentativa
+
+            proxima_tentativa = (
+                agora() + timedelta(seconds=intervalo)
+            )
+
+            logger.warning(
+                "Notificacao %s sera reenviada em %s segundos",
+                notificacao["id"],
+                intervalo
+            )
 
     banco.session.execute(
         text("""
             UPDATE notificacao
             SET status_envio = :status,
-                data_envio = :data
+                data_envio = :data_envio,
+                proxima_tentativa = :proxima,
+                ultimo_erro = :erro
             WHERE id = :id
+            AND status_envio = 'ENVIANDO'
+            AND tentativas = :tentativa
         """),
         {
             "status": status,
-            "data": data_envio,
-            "id": notificacao["id"]
+            "data_envio": data_envio,
+            "proxima": proxima_tentativa,
+            "erro": ultimo_erro,
+            "id": notificacao["id"],
+            "tentativa": tentativa
         }
     )
 
     banco.session.commit()
 
-    logger.info(
-        "Notificacao %s: %s",
-        notificacao["id"],
-        status
-    )
 
 
 def worker_notificacoes(app, banco, parar):
