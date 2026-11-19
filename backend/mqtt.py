@@ -19,6 +19,7 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import UniqueConstraint, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from werkzeug.exceptions import HTTPException
+from alertas import processar_ocorrencias, worker_notificacoes
 
 try:  # opcional: carrega variáveis de um arquivo .env, se python-dotenv estiver instalado
     from dotenv import load_dotenv
@@ -95,19 +96,51 @@ class Sensor(mybd.Model):
     data_instalacao = mybd.Column(mybd.DateTime)
 
 
-class Registro(mybd.Model):
-    """Tabela `medicao`, com os nomes de campo exigidos pelas diretrizes."""
-    __tablename__ = "medicao"
-    __table_args__ = (UniqueConstraint("id_sensor", "registro_tempo", name="uq_medicao_sensor_tempo"),)
 
-    id = mybd.Column(mybd.BigInteger().with_variant(mybd.Integer, "sqlite"), primary_key=True)
-    id_sensor = mybd.Column(mybd.Integer, mybd.ForeignKey("sensor.id"), nullable=False)
+class Registro(mybd.Model):
+    __tablename__ = "medicao"
+
+    id = mybd.Column(
+        mybd.BigInteger().with_variant(
+            mybd.Integer, "sqlite"
+        ),
+        primary_key=True
+    )
+
+    id_sensor = mybd.Column(
+        mybd.Integer,
+        mybd.ForeignKey("sensor.id"),
+        nullable=False
+    )
+
     temperature = mybd.Column(mybd.Numeric(10, 2))
     humidity = mybd.Column(mybd.Numeric(10, 2))
     CO2 = mybd.Column("CO2", mybd.Numeric(10, 2))
     particula1 = mybd.Column(mybd.Numeric(10, 2))
     particula2 = mybd.Column(mybd.Numeric(10, 2))
-    registro_tempo = mybd.Column(mybd.DateTime, nullable=False, index=True)  # sempre em UTC
+
+    registro_tempo = mybd.Column(
+        mybd.DateTime,
+        nullable=False,
+        index=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "id_sensor",
+            "registro_tempo",
+            name="uq_sensor_tempo"
+        ),
+    )
+
+
+CAMPOS_MEDIDOS = (
+    "temperature",
+    "humidity",
+    "CO2",
+    "particula1",
+    "particula2"
+)
 
 
 CAMPOS_MEDIDOS = ("temperature", "humidity", "CO2", "particula1", "particula2")
@@ -234,6 +267,8 @@ def _eh_duplicidade(erro):
     args = getattr(orig, "args", ())
     return (args and args[0] == 1062) or "UNIQUE constraint failed" in str(erro)
 
+# Sem restrição única no banco: controle de duplicidade desativado
+
 
 def _gravar_com_retry(item):
     """Grava um item; se o banco estiver indisponível, tenta de novo (backoff até 60s)."""
@@ -247,15 +282,30 @@ def _gravar_com_retry(item):
                     registrar_rejeitada(f"sensor '{item['codigo_sensor']}' não cadastrado",
                                         item["payload"], item["topico"])
                     return
-                mybd.session.add(Registro(
+                # Guarda o ambiente antes do commit.
+                id_ambiente = sensor.id_ambiente
+                id_sensor = sensor.id
+                registro = Registro(
                     id_sensor=sensor.id,
                     registro_tempo=item["registro_tempo"],
                     **item["valores"],
-                ))
+                )
+                mybd.session.add(registro)
                 mybd.session.commit()
                 _stat("gravadas")
                 logger.info("Dados inseridos no banco de dados com sucesso (sensor=%s, tempo=%s)",
                             item["codigo_sensor"], item["registro_tempo"])
+
+                # Verifica os limites somente após gravar a medição.
+                # Uma falha nos alertas não deve provocar nova inserção.
+                try:
+                    processar_ocorrencias(
+                        mybd, id_ambiente, id_sensor,
+                        item["codigo_sensor"], registro.id, item["valores"]
+                    )
+                except Exception as e:
+                    mybd.session.rollback()
+                    logger.exception("Erro ao verificar alertas: %s", e)
                 return
             except IntegrityError as e:
                 mybd.session.rollback()
@@ -392,9 +442,18 @@ mqtt_client.reconnect_delay_set(min_delay=1, max_delay=60)
 # e o loop reconecta sozinho (antes: mqtt_client.connect("test.mosquitto.org", 1883, 60))
 mqtt_client.connect_async(MQTT_BROKER, MQTT_PORT, 60)
 
+_worker_email = None
+
 def start_mqtt():
+    global _worker_email
     iniciar_worker()  # [NOVO]
     mqtt_client.loop_start()
+    if _worker_email is None or not _worker_email.is_alive():
+        _worker_email = threading.Thread(
+            target=worker_notificacoes, args=(app, mybd, _parar),
+            name="worker-email", daemon=True
+        )
+        _worker_email.start()
 
 # CONTEUDO
 

@@ -1,0 +1,26 @@
+# Ambiente virtual
+.venv/
+venv/
+
+# Credenciais
+.env
+credentials.json
+token.json
+client_secret_*.json
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+mensagens_rejeitadas.jsonl
+
+# Banco de testes
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
