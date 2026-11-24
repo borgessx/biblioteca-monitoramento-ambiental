@@ -1,0 +1,447 @@
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
+
+    <title>BioPreserve Fácil | SENAI</title>
+
+    <link rel="stylesheet"
+          href="{{ url_for('static', filename='css/style.css') }}">
+
+    <script
+        src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"
+        defer>
+    </script>
+
+    <script
+        src="{{ url_for('static', filename='js/script.js') }}"
+        defer>
+    </script>
+</head>
+
+<body>
+<main class="container">
+
+    <!-- CABEÇALHO -->
+    <header class="painel cabecalho">
+        <div class="identidade">
+            <div class="logo">SENAI</div>
+
+            <div>
+                <div class="linha-titulo">
+                    <h1>BioPreserve Fácil</h1>
+                    <span class="tag cyan">Biblioteca Viva</span>
+                </div>
+
+                <p>
+                    Monitoramento didático e inteligente da saúde
+                    do acervo e conforto dos alunos
+                </p>
+            </div>
+        </div>
+
+        <div class="status-central" id="status-central">
+            <span class="bolinha"></span>
+            <strong id="mensagem-central">
+                Consultando ambiente...
+            </strong>
+        </div>
+
+        <div class="controles">
+            <label class="seletor">
+                <span>Ambiente:</span>
+                <select id="ambiente">
+                    <option>Carregando...</option>
+                </select>
+            </label>
+
+            <div class="atualizacao">
+                ◷
+                <span id="ultima-atualizacao">
+                    Aguardando dados
+                </span>
+            </div>
+        </div>
+    </header>
+
+    <!-- CINCO CARDS -->
+    <section class="cards" aria-label="Indicadores ambientais">
+
+        <!-- TEMPERATURA -->
+        <article class="painel card card-temperatura">
+            <div class="card-topo">
+                <span>TEMPERATURA</span>
+                <span>🌡️</span>
+            </div>
+
+            <div class="valor-linha">
+                <strong class="valor amarelo"
+                        id="temperatura">—</strong>
+
+                <span class="tag"
+                      id="status-temperatura">
+                    Aguardando
+                </span>
+            </div>
+
+            <p class="texto-faixa">
+                Faixa ideal:
+                <strong>18°C a 22°C</strong>
+            </p>
+
+            <div class="temperatura-inferior">
+                <div class="barra-com-marcador">
+                    <div class="barra-termica">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+
+                    <div class="marcador-temperatura"
+                         id="marcador-temperatura">
+                    </div>
+                </div>
+
+                <div class="legenda-barra">
+                    <span>15°</span>
+
+                    <strong id="posicao-temperatura">
+                        Aguardando
+                    </strong>
+
+                    <span>26°</span>
+                </div>
+            </div>
+        </article>
+
+        <!-- UMIDADE -->
+        <article class="painel card">
+            <div class="card-topo">
+                <span>UMIDADE DO AR</span>
+                <span>💧</span>
+            </div>
+
+            <div class="valor-linha">
+                <strong class="valor ciano-texto"
+                        id="umidade">—</strong>
+
+                <span class="tag" id="status-umidade">
+                    Aguardando
+                </span>
+            </div>
+
+            <p id="faixa-umidade">
+                Aguardando limites...
+            </p>
+
+            <div class="card-detalhe">
+                <div>
+                    Risco de ressecar:
+                    <strong id="risco-ressecamento">—</strong>
+                </div>
+
+                <div>
+                    Risco de mofo:
+                    <strong id="risco-mofo">—</strong>
+                </div>
+            </div>
+        </article>
+
+        <!-- AR -->
+        <article class="painel card">
+            <div class="card-topo">
+                <span>AR &amp; CONCENTRAÇÃO</span>
+                <span>◉</span>
+            </div>
+
+            <strong class="ar-titulo"
+                    id="qualidade-ar">—</strong>
+
+            <p id="co2">CO₂: —</p>
+            <p id="particulas">Partículas: —</p>
+
+            <div class="ar-rodape">
+                <span class="tag" id="situacao-ar">
+                    Aguardando leitura
+                </span>
+            </div>
+        </article>
+
+        <!-- ÍNDICE -->
+        <article class="painel card card-gauge">
+            <div class="card-topo gauge-topo">
+                <span>
+                    ÍNDICE DE<br>
+                    PRESERVAÇÃO
+                </span>
+
+                <span class="gauge-tipo">Medidor</span>
+            </div>
+
+            <div class="gauge-container">
+                <svg class="gauge-svg"
+                     viewBox="0 0 180 118"
+                     role="img"
+                     aria-label="Escala semicircular do índice estimado">
+
+                    <path class="gauge-base"
+                          d="M 21 96 A 69 69 0 0 1 159 96"
+                          pathLength="100"/>
+
+                    <path class="gauge-red"
+                          d="M 21 96 A 69 69 0 0 1 159 96"
+                          pathLength="100"/>
+
+                    <path class="gauge-yellow"
+                          d="M 21 96 A 69 69 0 0 1 159 96"
+                          pathLength="100"/>
+
+                    <path class="gauge-green"
+                          d="M 21 96 A 69 69 0 0 1 159 96"
+                          pathLength="100"/>
+
+                    <circle
+                        id="gauge-marker"
+                        cx="21"
+                        cy="96"
+                        r="4"
+                        fill="#fff"
+                        stroke="#0b1120"
+                        stroke-width="2"
+                        visibility="hidden"/>
+                </svg>
+
+                <strong class="gauge-valor"
+                        id="indice">—</strong>
+            </div>
+
+            <span class="tag verde gauge-legenda"
+                  id="nivel-preservacao">
+                Aguardando limites
+            </span>
+
+            <small class="gauge-nota" id="indice-detalhe">
+                Índice experimental • não é laudo de conservação
+            </small>
+        </article>
+
+        <!-- RESUMO -->
+        <article class="painel card resumo">
+            <div class="card-topo">
+                <span class="ciano-texto">
+                    RESUMO DE HOJE
+                </span>
+            </div>
+
+            <p id="resumo-dia">
+                Aguardando informações ambientais da biblioteca.
+            </p>
+
+            <div class="responsavel">
+                Responsável:
+                <strong>Equipe Técnica SENAI</strong>
+            </div>
+        </article>
+
+    </section>
+
+    <!-- GRÁFICO E TABELA -->
+    <section class="conteudo">
+
+        <!-- GRÁFICO -->
+        <article class="painel grafico-painel">
+
+            <div class="secao-topo">
+                <div>
+                    <div class="titulo-grafico">
+                        <h2>
+                            Como o clima variou na biblioteca
+                        </h2>
+
+                        <span class="tag discreta">
+                            Fácil leitura
+                        </span>
+                    </div>
+
+                    <p>
+                        As linhas mostram como o ambiente
+                        se manteve estável e seguro.
+                    </p>
+                </div>
+
+                <label class="metrica-label">
+                    ▥ Métrica:
+
+                    <select id="metrica">
+                        <option value="ambos">
+                            Temperatura e Umidade
+                        </option>
+                        <option value="temperature">
+                            Temperatura
+                        </option>
+                        <option value="humidity">
+                            Umidade
+                        </option>
+                    </select>
+                </label>
+            </div>
+
+            <div class="abas"
+                 role="group"
+                 aria-label="Período do gráfico">
+
+                <button class="ativo"
+                        data-periodo="1"
+                        type="button">
+                    Hoje
+                </button>
+
+                <button data-periodo="3"
+                        type="button">
+                    Últimos 3 dias
+                </button>
+
+                <button data-periodo="7"
+                        type="button">
+                    Esta semana
+                </button>
+            </div>
+
+            <div class="grafico-area">
+                <canvas
+                    id="grafico"
+                    aria-label="Gráfico de temperatura e umidade">
+                </canvas>
+
+                <p class="aviso-grafico"
+                   id="aviso-grafico"></p>
+            </div>
+
+            <div class="legenda-grafico">
+                <span>
+                    <i class="ponto laranja-bg"></i>
+                    Temperatura (°C)
+                </span>
+
+                <span>
+                    <i class="ponto ciano-bg"></i>
+                    Umidade do Ar (%)
+                </span>
+            </div>
+
+            <div class="observacao"
+                 id="observacao-grafico">
+                Aguardando medições...
+            </div>
+        </article>
+
+        <!-- HISTÓRICO -->
+        <article class="painel historico-painel">
+
+            <div class="secao-topo">
+                <div>
+                    <h2>Histórico Recente</h2>
+                    <p>
+                        Leituras automáticas registradas
+                    </p>
+                </div>
+
+                <span class="tag cyan"
+                      id="sensor-status">
+                    Verificando sensor
+                </span>
+            </div>
+
+            <div class="tabela-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>HORÁRIO</th>
+                            <th>TEMP.</th>
+                            <th>UMIDADE</th>
+                            <th>SITUAÇÃO DOS LIVROS</th>
+                        </tr>
+                    </thead>
+
+                    <tbody id="tabela-leituras">
+                        <tr>
+                            <td colspan="4">
+                                Carregando medições...
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="tabela-rodape">
+                <span id="total-leituras">
+                    Aguardando...
+                </span>
+
+                <button id="atualizar"
+                        class="botao-secundario"
+                        type="button">
+                    Atualizar ↻
+                </button>
+            </div>
+        </article>
+
+    </section>
+
+    <!-- RODAPÉ -->
+    <footer class="painel rodape">
+        <h3>
+            ▤ Entenda Fácil: Por que cuidamos do clima dos livros?
+        </h3>
+
+        <div class="rodape-conteudo">
+            <div class="dica">
+                <strong>💧 Umidade elevada</strong>
+                <p>
+                    Pode favorecer mofo e deterioração das páginas.
+                </p>
+            </div>
+
+            <div class="dica">
+                <strong>☀️ Umidade muito baixa</strong>
+                <p>
+                    Pode ressecar materiais sensíveis do acervo.
+                </p>
+            </div>
+
+            <div class="dica">
+                <strong>🌡️ Temperatura adequada</strong>
+                <p>
+                    Ajuda a conservar livros e documentos.
+                </p>
+            </div>
+
+            <button class="botao-outline"
+                    id="relatar-problema"
+                    type="button">
+                ⚠ Relatar problema
+            </button>
+
+            <a class="botao-primario"
+               href="http://127.0.0.1:8080/api/exportar/medicoes?limite=100"
+               download>
+                ↓ Baixar resumo
+            </a>
+        </div>
+
+        <div class="rodape-final">
+            <span>
+                Eficiência e Preservação de Bibliotecas
+                • SENAI 2026
+            </span>
+
+            <span>Smart Library Monitoring</span>
+        </div>
+    </footer>
+
+</main>
+</body>
+</html>
