@@ -2,21 +2,28 @@
 /*
   BIOPRESERVE FÁCIL — SENAI
 
-  - Dados reais do MySQL via Flask
-  - Gráfico com médias de 1 em 1 hora
-  - Interpolação visual de até 2 horas vazias
-  - Histórico com todas as leituras recebidas
-  - Índice experimental de preservação
-  - Atualização a cada 30 segundos
+  MODO FRONTEND INDEPENDENTE
+
+  - Open-Meteo com dados externos reais/modelados
+  - Integração interna opcional com backend Flask
+  - Gráfico único com quatro curvas
+  - Temperatura em °C e umidade em %
+  - Intervalo de 1 hora
+  - Sem dados fictícios
 */
 
-let leituras = [];
-let limites = {};
+const $ = id => document.getElementById(id);
+
+const HORA = 3600000;
+const FUSO = "America/Sao_Paulo";
+
 let grafico = null;
 let periodoDias = 1;
-
-const HORA = 60 * 60 * 1000;
-const MAX_LACUNA = 2;
+let leituras = [];
+let limites = {};
+let climaExterno = [];
+let backendDisponivel = false;
+let sequenciaGrafico = 0;
 
 const INDICADORES = [
   "temperature",
@@ -26,18 +33,14 @@ const INDICADORES = [
   "particula2"
 ];
 
-const $ = id => document.getElementById(id);
-
-// =======================================
-// FUNÇÕES AUXILIARES
-// =======================================
-
 function valorNumerico(valor) {
   if (
     valor === null ||
     valor === undefined ||
     valor === ""
-  ) return null;
+  ) {
+    return null;
+  }
 
   const n = Number(valor);
 
@@ -56,40 +59,38 @@ function numero(valor, casas = 1) {
 }
 
 function dataDe(valor) {
-  if (valor === null || valor === undefined || valor === "") {
-    return null;
-  }
+  if (!valor) return null;
 
   if (typeof valor === "number") {
-    const data = new Date(
+    const d = new Date(
       valor < 1e12 ? valor * 1000 : valor
     );
 
-    return Number.isNaN(data.getTime()) ? null : data;
+    return Number.isNaN(d.getTime())
+      ? null
+      : d;
   }
 
-  const texto = String(valor).trim();
+  const texto = String(valor);
 
-  const formatoMySQL = texto.match(
+  const local = texto.match(
     /^(\d{4})-(\d\d)-(\d\d)[ T](\d\d):(\d\d)(?::(\d\d))?$/
   );
 
-  let data;
+  const data = local
+    ? new Date(
+        +local[1],
+        +local[2] - 1,
+        +local[3],
+        +local[4],
+        +local[5],
+        +(local[6] || 0)
+      )
+    : new Date(texto);
 
-  if (formatoMySQL) {
-    data = new Date(
-      Number(formatoMySQL[1]),
-      Number(formatoMySQL[2]) - 1,
-      Number(formatoMySQL[3]),
-      Number(formatoMySQL[4]),
-      Number(formatoMySQL[5]),
-      Number(formatoMySQL[6] || 0)
-    );
-  } else {
-    data = new Date(texto);
-  }
-
-  return Number.isNaN(data.getTime()) ? null : data;
+  return Number.isNaN(data.getTime())
+    ? null
+    : data;
 }
 
 function dataLeitura(item) {
@@ -102,55 +103,58 @@ function dataLeitura(item) {
   );
 }
 
-function formatarData(data, completo = false) {
-  if (!data) return "—";
-
-  return data.toLocaleString(
-    "pt-BR",
-    completo
-      ? {
-          day: "2-digit",
-          month: "2-digit",
-          year: "numeric",
-          hour: "2-digit",
-          minute: "2-digit"
-        }
-      : {
-          hour: "2-digit",
-          minute: "2-digit"
-        }
-  );
-}
-
 function horaCheia(data) {
   const d = new Date(data);
   d.setMinutes(0, 0, 0);
   return d.getTime();
 }
 
-function arrayResposta(dados, chave) {
-  if (Array.isArray(dados)) return dados;
+function formatarHora(tempo) {
+  return new Date(tempo).toLocaleTimeString(
+    "pt-BR",
+    {
+      hour: "2-digit",
+      minute: "2-digit"
+    }
+  );
+}
 
-  for (const nome of [
-    chave,
+function formatarData(tempo) {
+  if (!tempo) return "—";
+
+  const d = tempo instanceof Date
+    ? tempo
+    : new Date(tempo);
+
+  return d.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function arrayResposta(resposta, nome) {
+  if (Array.isArray(resposta)) {
+    return resposta;
+  }
+
+  for (const chave of [
+    nome,
     "dados",
     "registros",
     "resultados",
-    "items",
     "medicoes",
-    "leituras"
+    "leituras",
+    "items"
   ]) {
-    if (Array.isArray(dados?.[nome])) {
-      return dados[nome];
+    if (Array.isArray(resposta?.[chave])) {
+      return resposta[chave];
     }
   }
 
   return [];
 }
-
-// =======================================
-// CONSULTAS À API
-// =======================================
 
 async function consultar(nome) {
   const resposta = await fetch(
@@ -160,22 +164,18 @@ async function consultar(nome) {
 
   if (!resposta.ok) {
     throw new Error(
-      `Erro em ${nome}: HTTP ${resposta.status}`
+      `${nome}: HTTP ${resposta.status}`
     );
   }
 
   return resposta.json();
 }
 
-// =======================================
-// LIMITES AMBIENTAIS
-// =======================================
-
-function estado(campo, valor) {
+function situacao(campo, valor) {
   const n = valorNumerico(valor);
-  const limite = limites[campo];
+  const lim = limites[campo];
 
-  if (n === null || !limite) {
+  if (n === null || !lim) {
     return {
       texto: "Sem avaliação",
       classe: ""
@@ -183,8 +183,8 @@ function estado(campo, valor) {
   }
 
   if (
-    (limite.min !== null && n < limite.min) ||
-    (limite.max !== null && n > limite.max)
+    (lim.min !== null && n < lim.min) ||
+    (lim.max !== null && n > lim.max)
   ) {
     return {
       texto: "Alerta",
@@ -198,20 +198,92 @@ function estado(campo, valor) {
   };
 }
 
-function preencherStatus(id, situacao) {
-  $(id).className = "tag " + situacao.classe;
-  $(id).textContent = situacao.texto;
+function statusTag(id, estado) {
+  const elemento = $(id);
+  if (!elemento) return;
+
+  elemento.textContent = estado.texto;
+  elemento.className = "tag " + estado.classe;
 }
 
-async function carregarLimites() {
-  const resposta = await consultar("limites");
-  const lista = arrayResposta(resposta, "limites");
+function limparCards() {
+  $("temperatura").textContent = "—";
+  $("umidade").textContent = "—";
+  $("co2").textContent = "CO₂: —";
+  $("particulas").textContent = "Partículas: —";
+  $("qualidade-ar").textContent = "Sem dados IoT";
+
+  $("faixa-umidade").textContent =
+    "Aguardando dados internos";
+
+  $("risco-ressecamento").textContent = "—";
+  $("risco-mofo").textContent = "—";
+
+  $("marcador-temperatura").style.display = "none";
+
+  $("posicao-temperatura").textContent =
+    "Sem medição interna";
+
+  statusTag("status-temperatura", {
+    texto: "Indisponível",
+    classe: ""
+  });
+
+  statusTag("status-umidade", {
+    texto: "Indisponível",
+    classe: ""
+  });
+
+  statusTag("situacao-ar", {
+    texto: "Indisponível",
+    classe: ""
+  });
+
+  $("indice").textContent = "—";
+
+  $("nivel-preservacao").textContent =
+    "Sem dados internos";
+
+  $("indice-detalhe").textContent =
+    "Índice calculado somente com leituras IoT";
+
+  $("gauge-marker").setAttribute(
+    "visibility",
+    "hidden"
+  );
+
+  $("mensagem-central").textContent =
+    "Backend interno não conectado";
+
+  $("status-central").style.borderColor =
+    "#92400e";
+
+  $("resumo-dia").textContent =
+    "O banco MySQL está em outro computador. " +
+    "O gráfico externo pode ser consultado " +
+    "normalmente pela Open-Meteo.";
+
+  $("ultima-atualizacao").textContent =
+    "Aguardando sensor IoT";
+
+  $("sensor-status").textContent =
+    "IoT desconectado";
+
+  $("sensor-status").className =
+    "tag alerta";
+}
+
+function carregarLimites(dados) {
+  const lista = arrayResposta(
+    dados,
+    "limites"
+  );
 
   limites = {};
 
   for (const item of lista) {
     if (
-      [false, 0, "0", "false", "False"]
+      [false, 0, "0", "false"]
         .includes(item.ativo)
     ) {
       continue;
@@ -224,181 +296,28 @@ async function carregarLimites() {
       continue;
     }
 
-    const min = valorNumerico(item.valor_minimo);
-    const max = valorNumerico(item.valor_maximo);
+    const min = valorNumerico(
+      item.valor_minimo
+    );
 
-    if (min === null && max === null) continue;
+    const max = valorNumerico(
+      item.valor_maximo
+    );
+
+    if (min === null && max === null) {
+      continue;
+    }
 
     limites[campo] = { min, max };
   }
 
-  const umidade = limites.humidity;
-
-  $("faixa-umidade").textContent = umidade
-    ? `Faixa operacional: ${umidade.min ?? "—"}% a ${umidade.max ?? "—"}%`
-    : "Faixa operacional não cadastrada";
-}
-
-// =======================================
-// AMBIENTES
-// =======================================
-
-async function carregarAmbientes() {
-  const resposta = await consultar("ambientes");
-  const lista = arrayResposta(resposta, "ambientes");
-
-  const seletor = $("ambiente");
-  seletor.replaceChildren();
-
-  if (!lista.length) {
-    seletor.add(new Option("Biblioteca", ""));
-    return;
+  if (limites.humidity) {
+    $("faixa-umidade").textContent =
+      `Faixa operacional: ` +
+      `${limites.humidity.min ?? "—"}% a ` +
+      `${limites.humidity.max ?? "—"}%`;
   }
-
-  for (const item of lista) {
-    seletor.add(
-      new Option(
-        item.nome ?? "Ambiente",
-        item.id ?? ""
-      )
-    );
-  }
-
-  // Não permitir selecionar um ambiente que
-  // o backend ainda não consegue filtrar.
-  seletor.disabled = true;
-  seletor.title =
-    "Filtro por ambiente ainda não integrado à API";
 }
-
-// =======================================
-// CARD DE TEMPERATURA
-// =======================================
-
-function preencherTemperatura(dados) {
-  const temperatura = valorNumerico(dados.temperature);
-
-  $("temperatura").textContent =
-    numero(temperatura) + "°C";
-
-  const marcador = $("marcador-temperatura");
-
-  if (temperatura === null) {
-    preencherStatus("status-temperatura", {
-      texto: "Sem leitura",
-      classe: ""
-    });
-
-    marcador.style.display = "none";
-    $("posicao-temperatura").textContent =
-      "Aguardando leitura";
-
-    return;
-  }
-
-  const operacional = estado(
-    "temperature",
-    temperatura
-  );
-
-  let situacao;
-
-  if (operacional.texto === "Alerta") {
-    situacao = operacional;
-  } else if (
-    temperatura >= 18 &&
-    temperatura <= 22
-  ) {
-    situacao = {
-      texto: "Agradável",
-      classe: "ok"
-    };
-  } else {
-    situacao = {
-      texto: "Fora do ideal",
-      classe: "alerta"
-    };
-  }
-
-  preencherStatus("status-temperatura", situacao);
-
-  const porcentagem = Math.max(
-    0,
-    Math.min(
-      100,
-      ((temperatura - 15) / 11) * 100
-    )
-  );
-
-  marcador.style.left = porcentagem + "%";
-  marcador.style.display = "block";
-
-  $("posicao-temperatura").textContent =
-    `▲ Você está aqui (${numero(temperatura)}°)`;
-}
-
-// =======================================
-// CARD DE UMIDADE
-// =======================================
-
-function preencherUmidade(dados) {
-  const umidade = valorNumerico(dados.humidity);
-  const limite = limites.humidity;
-
-  $("umidade").textContent =
-    numero(umidade, 0) + "%";
-
-  preencherStatus(
-    "status-umidade",
-    estado("humidity", umidade)
-  );
-
-  $("risco-ressecamento").textContent =
-    umidade === null || !limite
-      ? "—"
-      : limite.min !== null &&
-        umidade < limite.min
-      ? "Atenção"
-      : "Baixo";
-
-  $("risco-mofo").textContent =
-    umidade === null || !limite
-      ? "—"
-      : limite.max !== null &&
-        umidade > limite.max
-      ? "Atenção"
-      : "Baixo";
-}
-
-// =======================================
-// CARD DO AR
-// =======================================
-
-function preencherAr(dados) {
-  const co2 = valorNumerico(dados.CO2);
-
-  $("co2").textContent =
-    "CO₂: " + numero(co2, 0) + " ppm";
-
-  $("particulas").textContent =
-    `Partículas: ${numero(dados.particula1)} / ` +
-    numero(dados.particula2);
-
-  const situacao = estado("CO2", co2);
-
-  $("qualidade-ar").textContent =
-    situacao.texto === "Adequado"
-      ? "Puro & Fresco"
-      : situacao.texto === "Alerta"
-      ? "Atenção ao Ar"
-      : "Sem avaliação";
-
-  preencherStatus("situacao-ar", situacao);
-}
-
-// =======================================
-// ÍNDICE EXPERIMENTAL
-// =======================================
 
 function pontuacaoIndicador(valor, limite) {
   const n = valorNumerico(valor);
@@ -433,7 +352,7 @@ function pontuacaoIndicador(valor, limite) {
   return 100;
 }
 
-function preencherIndice(dados) {
+function atualizarIndice(dados) {
   const notas = INDICADORES
     .map(campo =>
       pontuacaoIndicador(
@@ -443,23 +362,13 @@ function preencherIndice(dados) {
     )
     .filter(n => n !== null);
 
-  const marcador = $("gauge-marker");
-
   if (!notas.length) {
     $("indice").textContent = "—";
-
-    $("nivel-preservacao").textContent =
-      "Sem dados suficientes";
-
-    $("indice-detalhe").textContent =
-      "Configure leituras e limites válidos";
-
-    marcador.setAttribute("visibility", "hidden");
     return;
   }
 
   const media = notas.reduce(
-    (soma, nota) => soma + nota,
+    (soma, n) => soma + n,
     0
   ) / notas.length;
 
@@ -472,72 +381,165 @@ function preencherIndice(dados) {
       : media >= 85
       ? "Condições favoráveis"
       : media >= 60
-      ? "Atenção às condições"
+      ? "Atenção"
       : "Condições críticas";
-
-  $("nivel-preservacao").className =
-    "tag gauge-legenda " +
-    (media >= 85
-      ? "verde"
-      : media < 60
-      ? "alerta"
-      : "");
 
   $("indice-detalhe").textContent =
     `Estimativa experimental • ${notas.length}/5 indicadores`;
 
-  const angulo = Math.PI * (1 - media / 100);
+  const angulo = Math.PI * (
+    1 - media / 100
+  );
 
-  const x = 90 + 69 * Math.cos(angulo);
-  const y = 96 - 69 * Math.sin(angulo);
+  const marcador = $("gauge-marker");
 
-  marcador.setAttribute("cx", x.toFixed(2));
-  marcador.setAttribute("cy", y.toFixed(2));
-  marcador.setAttribute("visibility", "visible");
+  marcador.setAttribute(
+    "cx",
+    (90 + 69 * Math.cos(angulo)).toFixed(2)
+  );
+
+  marcador.setAttribute(
+    "cy",
+    (96 - 69 * Math.sin(angulo)).toFixed(2)
+  );
+
+  marcador.setAttribute(
+    "visibility",
+    "visible"
+  );
 }
 
-// =======================================
-// STATUS GERAL
-// =======================================
-
 function preencherCards(dados, kpis) {
-  preencherTemperatura(dados);
-  preencherUmidade(dados);
-  preencherAr(dados);
-  preencherIndice(dados);
+  const temp = valorNumerico(
+    dados.temperature
+  );
 
-  const abertos = valorNumerico(
+  const umid = valorNumerico(
+    dados.humidity
+  );
+
+  $("temperatura").textContent =
+    numero(temp) + "°C";
+
+  $("umidade").textContent =
+    numero(umid, 0) + "%";
+
+  const statusTemp = situacao(
+    "temperature",
+    temp
+  );
+
+  statusTag(
+    "status-temperatura",
+    statusTemp.texto === "Alerta"
+      ? statusTemp
+      : temp === null
+      ? {
+          texto: "Sem leitura",
+          classe: ""
+        }
+      : temp >= 18 && temp <= 22
+      ? {
+          texto: "Agradável",
+          classe: "ok"
+        }
+      : {
+          texto: "Fora do ideal",
+          classe: "alerta"
+        }
+  );
+
+  statusTag(
+    "status-umidade",
+    situacao("humidity", umid)
+  );
+
+  if (temp !== null) {
+    const marcador = $(
+      "marcador-temperatura"
+    );
+
+    marcador.style.left =
+      Math.max(
+        0,
+        Math.min(
+          100,
+          (temp - 15) / 11 * 100
+        )
+      ) + "%";
+
+    marcador.style.display = "block";
+
+    $("posicao-temperatura").textContent =
+      `▲ Você está aqui (${numero(temp)}°)`;
+  }
+
+  const limU = limites.humidity;
+
+  $("risco-ressecamento").textContent =
+    umid !== null &&
+    limU &&
+    limU.min !== null
+      ? umid < limU.min
+        ? "Atenção"
+        : "Baixo"
+      : "—";
+
+  $("risco-mofo").textContent =
+    umid !== null &&
+    limU &&
+    limU.max !== null
+      ? umid > limU.max
+        ? "Atenção"
+        : "Baixo"
+      : "—";
+
+  $("co2").textContent =
+    "CO₂: " + numero(dados.CO2, 0) + " ppm";
+
+  $("particulas").textContent =
+    `Partículas: ${numero(dados.particula1)} / ` +
+    numero(dados.particula2);
+
+  const estadoAr = situacao(
+    "CO2",
+    dados.CO2
+  );
+
+  $("qualidade-ar").textContent =
+    estadoAr.texto === "Adequado"
+      ? "Puro & Fresco"
+      : estadoAr.texto === "Alerta"
+      ? "Atenção ao Ar"
+      : "Sem avaliação";
+
+  statusTag("situacao-ar", estadoAr);
+
+  atualizarIndice(dados);
+
+  const abertas = valorNumerico(
     kpis?.ocorrencias_abertas
   );
 
   $("mensagem-central").textContent =
-    abertos === null
+    abertas === null
       ? "Ocorrências indisponíveis"
-      : abertos === 0
-      ? "Nenhuma ocorrência ambiental aberta"
-      : `${abertos} ocorrência(s) ambiental(is) aberta(s)`;
-
-  $("status-central").style.borderColor =
-    abertos === 0 ? "#065f46" : "#92400e";
+      : `${abertas} ocorrência(s) aberta(s)`;
 
   $("resumo-dia").textContent =
-    abertos === null
-      ? "Não foi possível consultar as ocorrências."
-      : abertos === 0
-      ? "Não existem ocorrências abertas no banco. Verifique a data da última leitura."
-      : `Existem ${abertos} ocorrência(s) abertas registradas no banco.`;
+    abertas === null
+      ? "Sem resumo das ocorrências"
+      : abertas === 0
+      ? "Nenhuma ocorrência aberta no banco."
+      : `${abertas} ocorrência(s) abertas no banco.`;
 
   const data = dataLeitura(dados);
 
   $("ultima-atualizacao").textContent =
     data
-      ? "Leitura: " + formatarData(data, true)
-      : "Data da leitura indisponível";
+      ? "Leitura: " + formatarData(data)
+      : "Sem horário da leitura";
 }
-
-// =======================================
-// HISTÓRICO — TODAS AS LEITURAS
-// =======================================
 
 function preencherTabela() {
   const tbody = $("tabela-leituras");
@@ -545,92 +547,87 @@ function preencherTabela() {
 
   if (!leituras.length) {
     const linha = document.createElement("tr");
-    const coluna = document.createElement("td");
+    const td = document.createElement("td");
 
-    coluna.colSpan = 4;
-    coluna.textContent =
-      "Nenhuma medição encontrada.";
+    td.colSpan = 4;
+    td.textContent =
+      "Sem leituras internas disponíveis neste PC.";
 
-    linha.appendChild(coluna);
+    linha.appendChild(td);
     tbody.appendChild(linha);
 
     $("total-leituras").textContent =
-      "Nenhuma leitura recebida";
+      "0 leituras internas";
     return;
   }
 
   const fragmento = document.createDocumentFragment();
 
-  // Não usamos mais slice(0, 5).
-  // Todos os registros retornados pela API entram na tabela.
   for (const item of leituras) {
     const linha = document.createElement("tr");
 
-    const valores = [
-      formatarData(dataLeitura(item), true),
-      numero(item.temperature) + " °C",
+    for (const texto of [
+      formatarData(dataLeitura(item)),
+      numero(item.temperature) + "°C",
       numero(item.humidity, 0) + "%"
-    ];
-
-    for (const valor of valores) {
-      const coluna = document.createElement("td");
-      coluna.textContent = valor;
-      linha.appendChild(coluna);
+    ]) {
+      const td = document.createElement("td");
+      td.textContent = texto;
+      linha.appendChild(td);
     }
 
-    const temperatura = estado(
+    const estadoT = situacao(
       "temperature",
       item.temperature
     );
 
-    const umidade = estado(
+    const estadoU = situacao(
       "humidity",
       item.humidity
     );
 
-    const colunaSituacao =
-      document.createElement("td");
-
+    const td = document.createElement("td");
     const tag = document.createElement("span");
 
-    const semAvaliacao =
-      temperatura.texto === "Sem avaliação" ||
-      umidade.texto === "Sem avaliação";
-
     const alerta =
-      temperatura.texto === "Alerta" ||
-      umidade.texto === "Alerta";
+      estadoT.texto === "Alerta" ||
+      estadoU.texto === "Alerta";
 
-    tag.className = "tag " +
-      (semAvaliacao
-        ? ""
-        : alerta
-        ? "alerta"
-        : "ok");
+    const avaliavel =
+      estadoT.texto !== "Sem avaliação" &&
+      estadoU.texto !== "Sem avaliação";
 
-    tag.textContent = semAvaliacao
+    tag.textContent = !avaliavel
       ? "Sem avaliação"
       : alerta
       ? "Atenção"
       : "Adequado";
 
-    colunaSituacao.appendChild(tag);
-    linha.appendChild(colunaSituacao);
+    tag.className =
+      "tag " +
+      (!avaliavel
+        ? ""
+        : alerta
+        ? "alerta"
+        : "ok");
+
+    td.appendChild(tag);
+    linha.appendChild(td);
     fragmento.appendChild(linha);
   }
 
   tbody.appendChild(fragmento);
 
   $("total-leituras").textContent =
-    `${leituras.length} leituras exibidas — todas as recebidas da API`;
+    `${leituras.length} leituras internas recebidas da API`;
 }
 
-// =======================================
-// MÉDIAS HORÁRIAS REAIS
-// =======================================
+// ========================================
+// AGREGAÇÃO DAS LEITURAS INTERNAS
+// ========================================
 
-function agregarPorHora(itens) {
-  const grupos = new Map();
+function mediasHorarias(itens) {
+  const mapa = new Map();
 
   for (const item of itens) {
     const data = dataLeitura(item);
@@ -639,164 +636,54 @@ function agregarPorHora(itens) {
 
     const hora = horaCheia(data);
 
-    if (!grupos.has(hora)) {
-      grupos.set(hora, {
+    if (!mapa.has(hora)) {
+      mapa.set(hora, {
         x: hora,
-        somaTemperatura: 0,
-        qtdTemperatura: 0,
-        somaUmidade: 0,
-        qtdUmidade: 0,
-        quantidade: 0
+        somaT: 0,
+        qtdT: 0,
+        somaU: 0,
+        qtdU: 0
       });
     }
 
-    const grupo = grupos.get(hora);
+    const grupo = mapa.get(hora);
+    const t = valorNumerico(item.temperature);
+    const u = valorNumerico(item.humidity);
 
-    grupo.quantidade++;
-
-    const temperatura = valorNumerico(
-      item.temperature
-    );
-
-    const umidade = valorNumerico(
-      item.humidity
-    );
-
-    if (temperatura !== null) {
-      grupo.somaTemperatura += temperatura;
-      grupo.qtdTemperatura++;
+    if (t !== null) {
+      grupo.somaT += t;
+      grupo.qtdT++;
     }
 
-    if (umidade !== null) {
-      grupo.somaUmidade += umidade;
-      grupo.qtdUmidade++;
+    if (u !== null) {
+      grupo.somaU += u;
+      grupo.qtdU++;
     }
   }
 
-  return [...grupos.values()]
+  return [...mapa.values()]
     .sort((a, b) => a.x - b.x)
-    .map(grupo => ({
-      x: grupo.x,
-
-      temperatura: grupo.qtdTemperatura
-        ? grupo.somaTemperatura / grupo.qtdTemperatura
+    .map(item => ({
+      x: item.x,
+      temperatura: item.qtdT
+        ? item.somaT / item.qtdT
         : null,
-
-      umidade: grupo.qtdUmidade
-        ? grupo.somaUmidade / grupo.qtdUmidade
+      umidade: item.qtdU
+        ? item.somaU / item.qtdU
         : null,
-
-      quantidade: grupo.quantidade
+      qtdT: item.qtdT,
+      qtdU: item.qtdU
     }));
 }
 
-// =======================================
-// COMPLETAR HORAS SEM MEDIÇÕES
-// =======================================
+// ========================================
+// FAIXA DE CONFORTO DO FIGMA
+// ========================================
 
-function preencherLacunas(pontos) {
-  if (!pontos.length) return [];
-
-  const mapa = new Map(
-    pontos.map(p => [p.x, p])
-  );
-
-  const primeiro = pontos[0].x;
-  const ultimo = pontos[pontos.length - 1].x;
-
-  const resultado = [];
-
-  for (let hora = primeiro; hora <= ultimo; hora += HORA) {
-    const real = mapa.get(hora);
-
-    if (real) {
-      resultado.push({
-        ...real,
-        estimadoTemperatura: false,
-        estimadoUmidade: false
-      });
-    } else {
-      resultado.push({
-        x: hora,
-        temperatura: null,
-        umidade: null,
-        quantidade: 0,
-        estimadoTemperatura: false,
-        estimadoUmidade: false
-      });
-    }
-  }
-
-  // Interpolação apenas entre horas reais,
-  // com no máximo 2 horas faltantes.
-  for (const campo of ["temperatura", "umidade"]) {
-    let indice = 0;
-
-    while (indice < resultado.length) {
-      if (resultado[indice][campo] !== null) {
-        indice++;
-        continue;
-      }
-
-      const inicio = indice;
-
-      while (
-        indice < resultado.length &&
-        resultado[indice][campo] === null
-      ) {
-        indice++;
-      }
-
-      const fim = indice - 1;
-      const quantidade = fim - inicio + 1;
-
-      const anterior = resultado[inicio - 1];
-      const proximo = resultado[indice];
-
-      if (
-        !anterior ||
-        !proximo ||
-        anterior[campo] === null ||
-        proximo[campo] === null ||
-        quantidade > MAX_LACUNA
-      ) {
-        continue;
-      }
-
-      const diferenca =
-        proximo[campo] - anterior[campo];
-
-      for (let j = 0; j < quantidade; j++) {
-        const proporcao =
-          (j + 1) / (quantidade + 1);
-
-        const ponto = resultado[inicio + j];
-
-        ponto[campo] =
-          anterior[campo] + diferenca * proporcao;
-
-        if (campo === "temperatura") {
-          ponto.estimadoTemperatura = true;
-        } else {
-          ponto.estimadoUmidade = true;
-        }
-      }
-    }
-  }
-
-  return resultado;
-}
-
-// =======================================
-// FAIXA DE CONFORTO 18–22°C
-// =======================================
-
-const pluginConforto = {
+const faixaConforto = {
   id: "faixaConforto",
 
   beforeDatasetsDraw(chart) {
-    if (!chart.$mostrarTemperatura) return;
-
     const escala = chart.scales.temp;
     const area = chart.chartArea;
 
@@ -807,11 +694,11 @@ const pluginConforto = {
       Math.min(area.bottom, y)
     );
 
-    const topo = limitar(
+    const y22 = limitar(
       escala.getPixelForValue(22)
     );
 
-    const baixo = limitar(
+    const y18 = limitar(
       escala.getPixelForValue(18)
     );
 
@@ -819,18 +706,22 @@ const pluginConforto = {
 
     ctx.save();
 
-    ctx.fillStyle = "rgba(16,185,129,.09)";
+    ctx.fillStyle =
+      "rgba(52,211,153,.10)";
+
     ctx.fillRect(
       area.left,
-      topo,
+      y22,
       area.right - area.left,
-      Math.max(0, baixo - topo)
+      Math.max(0, y18 - y22)
     );
 
-    ctx.strokeStyle = "rgba(52,211,153,.30)";
+    ctx.strokeStyle =
+      "rgba(52,211,153,.35)";
+
     ctx.setLineDash([4, 4]);
 
-    for (const y of [topo, baixo]) {
+    for (const y of [y22, y18]) {
       ctx.beginPath();
       ctx.moveTo(area.left, y);
       ctx.lineTo(area.right, y);
@@ -839,246 +730,225 @@ const pluginConforto = {
 
     ctx.setLineDash([]);
 
-    ctx.font = "10px Arial";
     ctx.fillStyle = "#6ee7b7";
+    ctx.font = "10px Arial";
 
     ctx.fillText(
       "Faixa ideal 18–22°C",
       area.left + 8,
-      Math.min(area.bottom - 8, topo + 15)
+      Math.min(area.bottom - 8, y22 + 14)
     );
 
     ctx.restore();
   }
 };
 
-// =======================================
+// ========================================
 // GRÁFICO
-// =======================================
+// ========================================
 
-function mensagemGrafico(texto) {
-  const elemento = $("aviso-grafico");
+function criarCurva(nome, dados, cor, eixo, externa) {
+  return {
+    label: nome,
+    data: dados,
+    yAxisID: eixo,
 
-  elemento.textContent = texto;
-  elemento.style.display = texto ? "flex" : "none";
+    borderColor: cor,
+    backgroundColor: cor,
+    borderWidth: externa ? 2.5 : 3,
+    borderDash: externa ? [7, 5] : [],
+
+    pointRadius: contexto => {
+      const total = contexto.dataset.data.length;
+      return total <= 24 ? 3 : 1.5;
+    },
+
+    pointHoverRadius: 6,
+    pointBackgroundColor: cor,
+    pointBorderColor: "#0b1525",
+    pointBorderWidth: 1,
+
+    tension: .35,
+    cubicInterpolationMode: "monotone",
+
+    spanGaps: false,
+    fill: false
+  };
 }
 
-function desenharGrafico() {
+function mostrarMensagemGrafico(texto) {
+  $("aviso-grafico").textContent = texto;
+  $("aviso-grafico").style.display =
+    texto ? "flex" : "none";
+}
+
+function atualizarLegendas() {
+  const ligado = $("comparar-externo").checked;
+
+  $("legenda-temp-externa").hidden = !ligado;
+  $("legenda-umid-externa").hidden = !ligado;
+}
+
+function criarGrafico() {
   if (grafico) {
     grafico.destroy();
     grafico = null;
   }
 
   if (typeof Chart === "undefined") {
-    mensagemGrafico(
-      "Não foi possível carregar a biblioteca do gráfico."
+    mostrarMensagemGrafico(
+      "Chart.js indisponível. Verifique a internet."
     );
     return;
   }
 
-  if (!leituras.length) {
-    mensagemGrafico(
-      "Nenhuma medição disponível na API."
-    );
-    return;
-  }
+  const mostrarExterno =
+    $("comparar-externo").checked;
+
+  const metrica = $("metrica").value;
+
+  const mostrarTemp = metrica !== "humidity";
+  const mostrarUmid = metrica !== "temperature";
 
   const agora = new Date();
 
-  const inicioHoje = new Date(
+  const inicio = new Date(
     agora.getFullYear(),
     agora.getMonth(),
-    agora.getDate()
+    agora.getDate() - periodoDias + 1
+  ).getTime();
+
+  const fim = agora.getTime();
+
+  const internas = mediasHorarias(
+    leituras.filter(item => {
+      const data = dataLeitura(item);
+      return data &&
+        data.getTime() >= inicio &&
+        data.getTime() <= fim;
+    })
   );
 
-  const inicioPeriodo = periodoDias === 1
-    ? inicioHoje.getTime()
-    : Date.now() - periodoDias * 24 * HORA;
+  const externas = mostrarExterno
+    ? climaExterno.filter(item => {
+        const data = dataDe(item.horario);
 
-  let filtradas = leituras.filter(item => {
-    const data = dataLeitura(item);
+        return data &&
+          data.getTime() >= inicio &&
+          data.getTime() <= fim;
+      })
+    : [];
 
-    return data &&
-      data.getTime() >= inicioPeriodo &&
-      data.getTime() <= Date.now();
-  });
+  const datasets = [];
 
-  let historicoAnterior = false;
-
-  // Se o período estiver vazio, exibimos
-  // o último dia com registros disponíveis,
-  // informando claramente que é histórico.
-  if (!filtradas.length) {
-    const ultimaData = dataLeitura(leituras[0]);
-
-    if (!ultimaData) {
-      mensagemGrafico("Datas inválidas nas medições.");
-      return;
-    }
-
-    const inicioHistorico =
-      ultimaData.getTime() - 24 * HORA;
-
-    filtradas = leituras.filter(item => {
-      const data = dataLeitura(item);
-
-      return data &&
-        data.getTime() >= inicioHistorico &&
-        data.getTime() <= ultimaData.getTime();
-    });
-
-    historicoAnterior = true;
+  if (mostrarTemp && internas.length) {
+    datasets.push(
+      criarCurva(
+        "Temperatura interna (IoT)",
+        internas.map(p => ({
+          x: p.x,
+          y: p.temperatura,
+          quantidade: p.qtdT
+        })),
+        "#ff9500",
+        "temp",
+        false
+      )
+    );
   }
 
-  const mediasReais = agregarPorHora(filtradas);
-  const pontos = preencherLacunas(mediasReais);
-
-  if (!pontos.length) {
-    mensagemGrafico(
-      "Não há temperatura ou umidade para exibir."
+  if (mostrarUmid && internas.length) {
+    datasets.push(
+      criarCurva(
+        "Umidade interna (IoT)",
+        internas.map(p => ({
+          x: p.x,
+          y: p.umidade,
+          quantidade: p.qtdU
+        })),
+        "#00d2ff",
+        "umid",
+        false
+      )
     );
+  }
+
+  if (mostrarTemp && externas.length) {
+    datasets.push(
+      criarCurva(
+        "Temperatura externa (Open-Meteo)",
+        externas
+          .filter(p => p.temperatura !== null)
+          .map(p => ({
+            x: horaCheia(
+              dataDe(p.horario)
+            ),
+            y: valorNumerico(p.temperatura)
+          })),
+        "#fde047",
+        "temp",
+        true
+      )
+    );
+  }
+
+  if (mostrarUmid && externas.length) {
+    datasets.push(
+      criarCurva(
+        "Umidade externa (Open-Meteo)",
+        externas
+          .filter(p => p.umidade !== null)
+          .map(p => ({
+            x: horaCheia(
+              dataDe(p.horario)
+            ),
+            y: valorNumerico(p.umidade)
+          })),
+        "#34d399",
+        "umid",
+        true
+      )
+    );
+  }
+
+  const possuiDados = datasets.some(
+    d => d.data.length > 0
+  );
+
+  atualizarLegendas();
+
+  if (!possuiDados) {
+    mostrarMensagemGrafico(
+      mostrarExterno
+        ? "Não há dados para o período selecionado."
+        : "Sem leituras IoT. Ative o comparativo externo."
+    );
+
     return;
   }
 
-  mensagemGrafico("");
+  mostrarMensagemGrafico("");
 
-  const metrica = $("metrica").value;
-  const datasets = [];
+  const valoresTemp = datasets
+    .filter(d => d.yAxisID === "temp")
+    .flatMap(d => d.data)
+    .map(p => p.y)
+    .filter(Number.isFinite);
 
-  const ctx = $("grafico").getContext("2d");
-
-  const gradiente = ctx.createLinearGradient(
-    0, 0, 0, 310
-  );
-
-  gradiente.addColorStop(
-    0,
-    "rgba(255,149,0,.25)"
-  );
-
-  gradiente.addColorStop(
-    1,
-    "rgba(255,149,0,0)"
-  );
-
-  function datasetDo(campo, label, cor, eixo) {
-    const estimado =
-      campo === "temperatura"
-        ? "estimadoTemperatura"
-        : "estimadoUmidade";
-
-    return {
-      label,
-      yAxisID: eixo,
-
-      data: pontos.map(p => ({
-        x: p.x,
-        y: p[campo],
-        estimado: p[estimado],
-        quantidade: p.quantidade
-      })),
-
-      borderColor: cor,
-
-      backgroundColor: campo === "temperatura"
-        ? gradiente
-        : "rgba(0,210,255,.04)",
-
-      borderWidth: campo === "temperatura" ? 3 : 2.5,
-
-      fill: campo === "temperatura" ? "origin" : false,
-
-      tension: 0.35,
-      cubicInterpolationMode: "monotone",
-
-      spanGaps: false,
-
-      pointRadius: contexto => {
-        const bruto = contexto.raw;
-
-        if (!bruto || bruto.y === null) return 0;
-
-        if (bruto.estimado) return 3;
-
-        return pontos.length <= 24 ? 3 : 1.5;
-      },
-
-      pointBackgroundColor: contexto => {
-        const bruto = contexto.raw;
-
-        return bruto?.estimado
-          ? "#0b1525"
-          : cor;
-      },
-
-      pointBorderColor: cor,
-      pointBorderWidth: 1.5,
-      pointHoverRadius: 6,
-
-      segment: {
-        borderDash: contexto => {
-          const anterior =
-            contexto.p0?.$context?.raw;
-
-          const atual =
-            contexto.p1?.$context?.raw;
-
-          return anterior?.estimado ||
-                 atual?.estimado
-            ? [5, 5]
-            : [];
-        }
-      }
-    };
-  }
-
-  if (
-    metrica === "ambos" ||
-    metrica === "temperature"
-  ) {
-    datasets.push(
-      datasetDo(
-        "temperatura",
-        "Temperatura (°C)",
-        "#ff9500",
-        "temp"
-      )
-    );
-  }
-
-  if (
-    metrica === "ambos" ||
-    metrica === "humidity"
-  ) {
-    datasets.push(
-      datasetDo(
-        "umidade",
-        "Umidade (%)",
-        "#00d2ff",
-        "umid"
-      )
-    );
-  }
-
-  const temperaturas = pontos
-    .map(p => p.temperatura)
-    .filter(v => v !== null);
-
-  const minimoTemperatura = temperaturas.length
-    ? Math.min(17, ...temperaturas) - 1
+  const minimoTemp = valoresTemp.length
+    ? Math.min(17, ...valoresTemp) - 1
     : 15;
 
-  const maximoTemperatura = temperaturas.length
-    ? Math.max(26, ...temperaturas) + 1
+  const maximoTemp = valoresTemp.length
+    ? Math.max(26, ...valoresTemp) + 1
     : 27;
 
-  const minimoX = pontos[0].x;
-  const maximoX = pontos[pontos.length - 1].x;
+  const ctx = $("grafico").getContext("2d");
 
   grafico = new Chart(ctx, {
     type: "line",
 
-    plugins: [pluginConforto],
+    plugins: [faixaConforto],
 
     data: { datasets },
 
@@ -1089,7 +959,7 @@ function desenharGrafico() {
       normalized: true,
 
       animation: {
-        duration: 450
+        duration: 500
       },
 
       interaction: {
@@ -1106,35 +976,35 @@ function desenharGrafico() {
           backgroundColor: "#162032",
           borderColor: "#334155",
           borderWidth: 1,
+          titleColor: "#ffffff",
+          bodyColor: "#e2e8f0",
           padding: 12,
 
           callbacks: {
-            title: itens => {
-              if (!itens.length) return "";
-
-              return formatarData(
-                new Date(itens[0].parsed.x),
-                true
-              );
-            },
+            title: itens => itens.length
+              ? formatarData(
+                  new Date(itens[0].parsed.x)
+                )
+              : "",
 
             label: item => {
-              const bruto = item.raw;
-
               const unidade =
                 item.dataset.yAxisID === "temp"
                   ? "°C"
                   : "%";
 
-              const tipo = bruto.estimado
-                ? " — estimativa interpolada"
-                : " — média de medições reais";
+              const fonte =
+                item.dataset.label.includes("IoT")
+                  ? "Média de leituras internas"
+                  : "Modelo meteorológico externo";
 
               return (
-                item.dataset.label + ": " +
+                item.dataset.label +
+                ": " +
                 numero(item.parsed.y) +
                 unidade +
-                tipo
+                " • " +
+                fonte
               );
             }
           }
@@ -1144,14 +1014,11 @@ function desenharGrafico() {
       scales: {
         x: {
           type: "linear",
-
-          // Cada ponto é uma hora.
-          // A escala trabalha em passos de 1 hora.
-          min: minimoX - HORA / 2,
-          max: maximoX + HORA / 2,
+          min: inicio,
+          max: fim,
 
           grid: {
-            color: "rgba(35,50,77,.40)"
+            color: "rgba(35,50,77,.42)"
           },
 
           border: {
@@ -1160,22 +1027,24 @@ function desenharGrafico() {
 
           ticks: {
             stepSize: HORA,
-            maxTicksLimit: 9,
-            maxRotation: 0,
+            maxTicksLimit: 8,
             autoSkip: true,
+            maxRotation: 0,
             color: "#94a3b8",
 
             callback: valor => {
               const d = new Date(valor);
 
-              return periodoDias === 1 &&
-                     !historicoAnterior
-                ? formatarData(d)
-                : d.toLocaleString("pt-BR", {
-                    day: "2-digit",
-                    month: "2-digit",
-                    hour: "2-digit"
-                  }) + "h";
+              return periodoDias === 1
+                ? formatarHora(valor)
+                : d.toLocaleString(
+                    "pt-BR",
+                    {
+                      day: "2-digit",
+                      month: "2-digit",
+                      hour: "2-digit"
+                    }
+                  ) + "h";
             }
           }
         },
@@ -1183,10 +1052,10 @@ function desenharGrafico() {
         temp: {
           type: "linear",
           position: "left",
-          display: metrica !== "humidity",
+          display: mostrarTemp,
 
-          suggestedMin: minimoTemperatura,
-          suggestedMax: maximoTemperatura,
+          suggestedMin: minimoTemp,
+          suggestedMax: maximoTemp,
 
           grid: {
             color: "rgba(35,50,77,.42)"
@@ -1196,24 +1065,29 @@ function desenharGrafico() {
             display: false
           },
 
+          title: {
+            display: mostrarTemp,
+            text: "Temperatura (°C)",
+            color: "#fbbf24"
+          },
+
           ticks: {
-            color: "#94a3b8",
-            callback: valor => valor + "°C"
+            color: "#fbbf24",
+            callback: valor =>
+              valor + "°C"
           }
         },
 
         umid: {
           type: "linear",
           position: "right",
-          display: metrica !== "temperature",
+          display: mostrarUmid,
 
           min: 0,
           max: 100,
 
           grid: {
-            drawOnChartArea:
-              metrica === "humidity",
-
+            drawOnChartArea: !mostrarTemp,
             color: "rgba(35,50,77,.42)"
           },
 
@@ -1221,59 +1095,119 @@ function desenharGrafico() {
             display: false
           },
 
+          title: {
+            display: mostrarUmid,
+            text: "Umidade (%)",
+            color: "#67e8f9"
+          },
+
           ticks: {
-            color: "#94a3b8",
-            callback: valor => valor + "%"
+            color: "#67e8f9",
+            callback: valor =>
+              valor + "%"
           }
         }
       }
     }
   });
 
-  grafico.$mostrarTemperatura =
-    metrica !== "humidity";
-
-  const estimativas = pontos.filter(
-    p => p.estimadoTemperatura ||
-         p.estimadoUmidade
-  ).length;
-
-  const primeiro = new Date(minimoX);
-  const ultimo = new Date(maximoX);
-
-  const descricao =
-    `${filtradas.length} medições reais, ` +
-    `${mediasReais.length} horas com registros, ` +
-    `${estimativas} hora(s) com interpolação visual.`;
+  const totalInternas = internas.length;
+  const totalExternas = externas.length;
 
   $("observacao-grafico").textContent =
-    historicoAnterior
-      ? `Sem medições no período selecionado. ` +
-        `Exibindo histórico de ${formatarData(primeiro, true)} ` +
-        `a ${formatarData(ultimo, true)}. ${descricao}`
-      : `Médias calculadas de 1 em 1 hora. ${descricao}`;
+    `${totalInternas} horas com leituras IoT • ` +
+    `${totalExternas} horas com clima externo. ` +
+    "Intervalo de 1 hora.";
 
   $("observacao-grafico").style.color =
-    historicoAnterior
-      ? "#fbbf24"
-      : "#34d399";
+    "#34d399";
 }
 
-// =======================================
-// CARREGAMENTO PRINCIPAL
-// =======================================
+// ========================================
+// CONSULTA OPEN-METEO
+// ========================================
 
-async function atualizar() {
+async function atualizarClimaExterno() {
+  const id = ++sequenciaGrafico;
+
+  if (!$("comparar-externo").checked) {
+    climaExterno = [];
+
+    $("comparativo-status").textContent =
+      "Comparativo externo desativado.";
+
+    criarGrafico();
+    return;
+  }
+
+  $("comparativo-status").textContent =
+    "Consultando Open-Meteo em São Caetano do Sul...";
+
   try {
-    const [
-      ultima,
-      historico,
-      kpis
-    ] = await Promise.all([
-      consultar("ultima"),
-      consultar("leituras"),
-      consultar("kpis")
-    ]);
+    const resposta = await fetch(
+      `/dados/clima-externo?dias=${periodoDias}`,
+      { cache: "no-store" }
+    );
+
+    if (!resposta.ok) {
+      throw new Error(
+        "Falha HTTP " + resposta.status
+      );
+    }
+
+    const dados = await resposta.json();
+
+    if (
+      id !== sequenciaGrafico ||
+      !$("comparar-externo").checked
+    ) {
+      return;
+    }
+
+    climaExterno = Array.isArray(dados.horas)
+      ? dados.horas
+      : [];
+
+    $("comparativo-status").textContent =
+      `${climaExterno.length} horários externos ` +
+      "obtidos da Open-Meteo • São Caetano do Sul, SP.";
+
+    criarGrafico();
+
+  } catch (erro) {
+    if (id !== sequenciaGrafico) return;
+
+    console.error(
+      "Erro ao consultar Open-Meteo:",
+      erro
+    );
+
+    climaExterno = [];
+
+    $("comparativo-status").textContent =
+      "Não foi possível consultar a Open-Meteo.";
+
+    criarGrafico();
+  }
+}
+
+// ========================================
+// CONSULTA BACKEND OPCIONAL
+// ========================================
+
+async function atualizarInterno() {
+  try {
+    const [ultima, historico, kpis, listaLimites] =
+      await Promise.all([
+        consultar("ultima"),
+        consultar("leituras"),
+        consultar("kpis"),
+        consultar("limites")
+      ]);
+
+    backendDisponivel = true;
+
+    carregarLimites(listaLimites);
 
     leituras = arrayResposta(
       historico,
@@ -1282,102 +1216,147 @@ async function atualizar() {
       .filter(item => dataLeitura(item))
       .sort(
         (a, b) =>
-          dataLeitura(b) - dataLeitura(a)
+          dataLeitura(b) -
+          dataLeitura(a)
       );
 
-    const ultimaLeitura =
+    const dados =
       ultima?.leitura ??
       ultima?.ultima ??
       ultima?.medicao ??
       ultima;
 
-    preencherCards(ultimaLeitura, kpis);
-    preencherTabela();
-    desenharGrafico();
+    preencherCards(dados, kpis);
 
     $("sensor-status").textContent =
-      `${leituras.length} leituras`;
+      "IoT conectado";
 
     $("sensor-status").className =
       "tag cyan";
 
   } catch (erro) {
-    console.error(erro);
+    backendDisponivel = false;
+    leituras = [];
+    limites = {};
 
-    $("mensagem-central").textContent =
-      "Erro ao consultar a API Flask";
-
-    $("sensor-status").textContent =
-      "Sem conexão";
-
-    $("sensor-status").className =
-      "tag alerta";
-
-    $("observacao-grafico").textContent =
-      "Verifique o backend na porta 8080.";
+    limparCards();
   }
+
+  preencherTabela();
+  criarGrafico();
 }
 
-// =======================================
+// ========================================
 // EVENTOS
-// =======================================
+// ========================================
 
-document.querySelectorAll(
-  "[data-periodo]"
-).forEach(botao => {
-  botao.addEventListener("click", () => {
-    periodoDias = Number(botao.dataset.periodo);
-
-    document.querySelectorAll(
-      "[data-periodo]"
-    ).forEach(item => {
-      item.classList.toggle(
-        "ativo",
-        item === botao
+for (
+  const botao of document.querySelectorAll(
+    "[data-periodo]"
+  )
+) {
+  botao.addEventListener(
+    "click",
+    async () => {
+      periodoDias = Number(
+        botao.dataset.periodo
       );
-    });
 
-    desenharGrafico();
-  });
-});
+      for (
+        const item of document.querySelectorAll(
+          "[data-periodo]"
+        )
+      ) {
+        item.classList.toggle(
+          "ativo",
+          item === botao
+        );
+      }
+
+      if ($("comparar-externo").checked) {
+        await atualizarClimaExterno();
+      } else {
+        criarGrafico();
+      }
+    }
+  );
+}
 
 $("metrica").addEventListener(
   "change",
-  desenharGrafico
+  criarGrafico
+);
+
+$("comparar-externo").addEventListener(
+  "change",
+  atualizarClimaExterno
 );
 
 $("atualizar").addEventListener(
   "click",
-  atualizar
+  async () => {
+    await atualizarInterno();
+
+    if ($("comparar-externo").checked) {
+      await atualizarClimaExterno();
+    }
+  }
 );
 
 $("relatar-problema").addEventListener(
   "click",
   () => {
     alert(
-      "Registro manual ainda não implementado."
+      "O registro manual depende do backend."
     );
   }
 );
 
+// ========================================
+// INICIALIZAÇÃO
+// ========================================
+
 async function iniciar() {
-  const resultados = await Promise.allSettled([
-    carregarLimites(),
-    carregarAmbientes()
-  ]);
+  const seletor = $("ambiente");
 
-  resultados.forEach(resultado => {
-    if (resultado.status === "rejected") {
-      console.warn(
-        "Erro de configuração:",
-        resultado.reason
-      );
-    }
-  });
+  seletor.replaceChildren();
+  seletor.add(
+    new Option("Biblioteca", "")
+  );
+  seletor.disabled = true;
 
-  await atualizar();
+  limparCards();
+  preencherTabela();
+
+  // Habilita visualização externa automaticamente
+  // quando o backend local não estiver acessível.
+  await atualizarInterno();
+
+  if (!backendDisponivel) {
+    $("comparar-externo").checked = true;
+  }
+
+  if ($("comparar-externo").checked) {
+    await atualizarClimaExterno();
+  } else {
+    criarGrafico();
+  }
 }
 
 iniciar();
 
-setInterval(atualizar, 30000);
+// Reconsulta o IoT periodicamente.
+// O clima externo tem atualização menos frequente.
+setInterval(
+  atualizarInterno,
+  30000
+);
+
+setInterval(
+  () => {
+    if ($("comparar-externo").checked) {
+      atualizarClimaExterno();
+    }
+  },
+  600000
+);
